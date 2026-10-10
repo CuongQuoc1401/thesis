@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+.env
+
+# Bỏ qua các file dữ liệu khổng lồ (vượt quá giới hạn 100MB của GitHub)
+combined_final_data.csv
+combined_final_excel.xlsx
+data_clean_미래_유망_직업.csv
+datagov_with_content.csv
+preprocessed_data_for_network.csv
+backup/never_blog/naver_미래_유망_직업_2021_2026_after_merge copy.xlsx
+backup/never_blog/naver_미래_유망_직업_2021_2026_after_merge.xlsx
+backup/never_blog/progress_미래_유망_직업.csv

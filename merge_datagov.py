@@ -1,0 +1,122 @@
+import pandas as pd
+import os
+import sys
+import re
+
+# ==========================================
+# CẤU HÌNH TÊN FILE (Đồng bộ với các bước trước)
+# ==========================================
+MASTER_EXCEL_FILE = "combined_final_excel.xlsx"  # File Excel tổng chứa toàn bộ dữ liệu luận văn
+DATA_GOV_CSV_FILE = "datagov_with_content.csv"   # File dữ liệu chính phủ đã cào nội dung chi tiết
+ERROR_CSV_FILE = "merge_error_log.csv"           # File log lỗi chung
+
+def clean_illegal_xml_chars(val):
+    """Loại bỏ hoàn toàn các ký tự hệ thống (ASCII 0-31) làm lỗi file Excel"""
+    if not isinstance(val, str):
+        return val
+    # Khử toàn bộ ký tự không hợp lệ cho XML/Excel dữ liệu
+    cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x84\x86-\x9f]', '', val)
+    return cleaned
+
+def merge_datagov_process():
+    # Kiểm tra sự tồn tại của các file đầu vào cốt lõi
+    if not os.path.exists(DATA_GOV_CSV_FILE):
+        print(f"[Lỗi] Không tìm thấy file dữ liệu Data.go.kr chi tiết: {DATA_GOV_CSV_FILE}")
+        return
+        
+    if not os.path.exists(MASTER_EXCEL_FILE):
+        print(f"[Lỗi] Không tìm thấy file Excel tổng합: {MASTER_EXCEL_FILE}")
+        return
+
+    # 1. ĐỌC FILE EXCEL TỔNG HỢP (MASTER)
+    print("[1/4] Đang đọc cấu trúc và dữ liệu từ file Excel tổng hiện tại...")
+    df_master = pd.read_excel(MASTER_EXCEL_FILE, dtype=str)
+    excel_columns = df_master.columns.tolist()
+    
+    # SỬA LỖI: Làm sạch khoảng trắng của toàn bộ URL cũ trong file Excel tổng để so sánh chuẩn xác 100%
+    existing_urls = set(df_master['URL Bài Viết'].dropna().astype(str).str.strip().tolist())
+    print(f"   => File Excel tổng hiện tại đang có {len(df_master)} dòng dữ liệu gốc.")
+
+    # Khởi tạo file log lỗi nếu chưa tồn tại
+    if not os.path.exists(ERROR_CSV_FILE):
+        pd.DataFrame(columns=["Title", "Origin Link", "Reason"]).to_csv(ERROR_CSV_FILE, index=False, encoding='utf-8-sig')
+
+    # 2. ĐỌC FILE DATA.GO.KR CSV
+    print("[2/4] Đang đọc file Data.go.kr CSV chứa nội dung chi tiết...")
+    df_gov_csv = pd.read_csv(DATA_GOV_CSV_FILE, dtype=str)
+    print(f"   => Tìm thấy tổng cộng {len(df_gov_csv)} dòng trong file CSV cào chi tiết.")
+    
+    # 3. TIẾN HÀNH DUYỆT TỪNG DÒNG ĐỂ LỌC VÀ GỘP CUỐN CHIẾU
+    print("[3/4] Bắt đầu kiểm tra điều kiện nội dung và lọc trùng bài viết...")
+    print("      (Nhấn Ctrl + C nếu muốn dừng an toàn giữa chừng)")
+    
+    new_rows_to_append = []
+    error_rows = []
+    
+    skip_by_duplicate = 0
+    skip_by_empty = 0
+    
+    try:
+        for idx, row in df_gov_csv.iterrows():
+            keyword = row.get('Keyword', '')
+            dtype = row.get('Data_Type', 'FILE')
+            title = str(row.get('Title', '')).strip() if pd.notna(row.get('Title')) else "[Không tiêu đề]"
+            url = str(row.get('Detail_Link', '')).strip() # SỬA LỖI: Cắt khoảng trắng của URL mới
+            pub_date = row.get('Modify_Date', '')
+            content = row.get('Detailed_Content', '')
+            
+            # KIỂM TRA TRÙNG: Nếu thực sự đã trùng liên kết trong Excel tổng
+            if url in existing_urls:
+                skip_by_duplicate += 1
+                continue
+                
+            # KIỂM TRA Ô NỘI DUNG RỖNG HOẶC LỖI CÀO
+            if pd.isna(content) or str(content).strip() == "" or str(content).strip().startswith("[Lỗi]") or str(content).strip().startswith("[Trống]"):
+                reason = f"Ô nội dung chi tiết của Data.go.kr ({dtype}) bị trống hoặc lỗi cào"
+                error_rows.append({"Title": title, "Origin Link": url, "Reason": reason})
+                skip_by_empty += 1
+                continue
+                
+            # ÁNH XẠ DỮ LIỆU HỢP LỆ VÀO KHUNG CỘT EXCEL GỐC
+            new_row = {col: None for col in excel_columns}
+            
+            new_row['Tiêu Đề'] = title
+            new_row['URL Bài Viết'] = url
+            new_row['Tên Blog'] = f"Data.go.kr ({dtype})"   
+            new_row['Ngày Đăng'] = pub_date
+            
+            # XỬ LÝ: Khử sạch ký tự lạ gây crash Excel
+            new_row['Nội Dung Chi Tiết'] = clean_illegal_xml_chars(content)
+            
+            new_rows_to_append.append(new_row)
+            existing_urls.add(url)
+            
+    except KeyboardInterrupt:
+        print("\n" + "="*50)
+        print("[Tín hiệu] Bạn đã bấm dừng tiến trình bằng phím Ctrl + C!")
+        print("[An toàn] Hệ thống tiến hành đóng gói phần dữ liệu đã duyệt...")
+        print("="*50)
+
+    # 4. GHI DỮ LIỆU XUỐNG FILE EXCEL TỔNG
+    print("[4/4] Đang đóng gói dữ liệu và xuất file cập nhật...")
+    print(f"   => Thống kê lượt duyệt: Bỏ qua do trùng lặp: {skip_by_duplicate} bài | Bỏ qua do nội dung trống/lỗi: {skip_by_empty} bài.")
+    
+    # Ghi log lỗi
+    if error_rows:
+        df_new_errors = pd.DataFrame(error_rows)
+        df_new_errors.to_csv(ERROR_CSV_FILE, mode='a', index=False, header=False, encoding='utf-8-sig')
+        print(f"   => Đã phát hiện và ghi thêm {len(error_rows)} bản ghi lỗi vào file '{ERROR_CSV_FILE}'.")
+        
+    # Nối đuôi dữ liệu và ghi đè lưu file
+    if new_rows_to_append:
+        df_new_valid = pd.DataFrame(new_rows_to_append)
+        df_final = pd.concat([df_master, df_new_valid], ignore_index=True)
+        
+        print(f"   => Đang tiến hành ghi {len(new_rows_to_append)} dòng mới vào file Excel (Mất khoảng 1-2 phút do file tổng có 160k+ dòng)...")
+        df_final.to_excel(MASTER_EXCEL_FILE, index=False)
+        print(f"   => [Thành công] Đã gộp thêm {len(new_rows_to_append)} bài viết từ Data.go.kr vào '{MASTER_EXCEL_FILE}'.")
+    else:
+        print("   => Không có dữ liệu Data.go.kr mới nào đủ điều kiện để chèn thêm (Toàn bộ đã bị trùng hoặc trống).")
+
+if __name__ == "__main__":
+    merge_datagov_process()
